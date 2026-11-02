@@ -20,5 +20,6 @@ __all__ = [
     "gemma3_1b_peft_1gpu_h100_bf16_config",
     "gemma3_1b_pretrain_1gpu_h100_bf16_config",
     "gemma3_1b_sft_1gpu_h100_bf16_config",
+    "gemma4_12b_sft_8gpu_h100_bf16_config",
     "gemma4_e4b_pretrain_2gpu_h100_bf16_config",
 ]

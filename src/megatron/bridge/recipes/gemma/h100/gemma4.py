@@ -20,9 +20,11 @@ from contextlib import contextmanager
 import torch
 
 from megatron.bridge import AutoBridge
-from megatron.bridge.recipes.common import _pretrain_common
+from megatron.bridge.recipes.common import _pretrain_common, _sft_common
+from megatron.bridge.recipes.utils.dataset_utils import default_squad_config
 from megatron.bridge.recipes.utils.environment_utils import COMMON_RECIPE_ENV_VARS
 from megatron.bridge.training.config import ConfigContainer
+from megatron.bridge.training.mixed_precision import bf16_mixed
 
 
 _GEMMA4_E4B_HF_PATH = "google/gemma-4-E4B-it"
@@ -142,6 +144,127 @@ def gemma4_e4b_pretrain_2gpu_h100_bf16_config() -> ConfigContainer:
     return cfg
 
 
+# =============================================================================
+# Gemma 4 12B SFT Configuration
+# =============================================================================
+
+_GEMMA4_12B_HF_PATH = "google/gemma-4-12B-it"
+
+
+def gemma4_12b_sft_8gpu_h100_bf16_config() -> ConfigContainer:
+    """Return a full SFT config for Gemma 4 12B (dense text decoder, ~11.8B parameters).
+
+    ``google/gemma-4-12B-it`` is a ``Gemma4UnifiedForConditionalGeneration``
+    checkpoint; ``Gemma4UnifiedTextBridge`` converts only its text decoder.
+
+    Architecture (Gemma 4 12B text decoder):
+    - 48 layers, hidden_size=3840, ffn_hidden_size=15360, vocab=262144 (tied)
+    - 16 attention heads; sliding layers: 8 KV heads, head_dim=256, window 1024;
+      global layers (every 6th): 1 KV head, head_dim=512, K reused as V (k_eq_v)
+    - Dual RoPE: sliding θ=10 000, global θ=1 000 000 with 0.25 partial rotation
+    - Local (non-TE) transformer spec via ``get_gemma4_layer_spec`` (PP=1, CP=1 only)
+
+    Default configuration: 8 GPUs (validated on 8x H200 141GB)
+    - TP=2, PP=1, CP=1, DP=4; distributed optimizer, overlapped grad-reduce/param-gather
+    - MBS=1, GBS=32, seq_length=4096, no activation recompute
+    - SQuAD, unpacked: the local DotProductAttention cannot consume packed (THD) batches
+    - LR=5e-6 (full SFT)
+
+    Finetuning from the HF weights needs a Megatron checkpoint, e.g.::
+
+        python examples/conversion/convert_checkpoints.py import \\
+            --hf-model google/gemma-4-12B-it --megatron-path /ckpts/gemma4_12b
+        ... checkpoint.pretrained_checkpoint=/ckpts/gemma4_12b
+    """
+    cfg = _sft_common()
+
+    cfg.model = AutoBridge.from_hf_pretrained(_GEMMA4_12B_HF_PATH).get_model_config()
+
+    # Tokenizer
+    cfg.tokenizer.tokenizer_model = _GEMMA4_12B_HF_PATH
+
+    # Dataset — SQuAD without offline packing (see docstring).
+    seq_length = 4096
+    cfg.dataset = default_squad_config(seq_length=seq_length, enable_offline_packing=False)
+    cfg.model.seq_length = seq_length
+
+    # Parallelism: TP=2 keeps static model state (bf16 weights + fp32 main grads +
+    # sharded Adam) at ~53 GB/GPU, leaving room for unfused-attention activations.
+    cfg.model.tensor_model_parallel_size = 2
+    cfg.model.pipeline_model_parallel_size = 1
+    cfg.model.pipeline_model_parallel_layout = None
+    cfg.model.pipeline_dtype = None
+    cfg.model.virtual_pipeline_model_parallel_size = None
+    cfg.model.context_parallel_size = 1
+    cfg.model.sequence_parallel = False
+
+    cfg.mixed_precision = bf16_mixed()
+
+    # Training
+    cfg.train.train_iters = 100
+    cfg.train.global_batch_size = 32
+    cfg.train.micro_batch_size = 1
+    cfg.train.manual_gc = True
+    cfg.train.manual_gc_interval = 100
+    cfg.train.manual_gc_eval = 100
+    cfg.validation.eval_interval = 50
+    cfg.validation.eval_iters = 10
+    cfg.logger.log_interval = 1
+
+    # Optimizer / scheduler
+    cfg.optimizer.lr = 5e-6
+    cfg.optimizer.min_lr = 0.0
+    cfg.optimizer.adam_beta2 = 0.95
+    cfg.optimizer.use_precision_aware_optimizer = False
+    cfg.optimizer.main_grads_dtype = torch.float32
+    cfg.optimizer.main_params_dtype = torch.float32
+    cfg.optimizer.exp_avg_dtype = torch.float32
+    cfg.optimizer.exp_avg_sq_dtype = torch.float32
+    cfg.scheduler.lr_warmup_iters = 10
+    cfg.scheduler.lr_decay_iters = 100
+
+    # Implementation — the Gemma 4 dense spec is local (non-TE)
+    cfg.model.transformer_impl = "local"
+    cfg.model.cuda_graph_impl = "none"
+    cfg.model.cuda_graph_scope = "full"
+    cfg.model.cuda_graph_warmup_steps = 3
+
+    # Kernel / fusion settings — disable TE-specific fusions for the local spec
+    cfg.model.attention_backend = None
+    cfg.model.cross_entropy_loss_fusion = True
+    cfg.model.cross_entropy_fusion_impl = "native"
+    cfg.model.masked_softmax_fusion = False
+    cfg.model.gradient_accumulation_fusion = False
+
+    # Memory saving (disabled)
+    cfg.model.recompute_granularity = None
+    cfg.model.recompute_modules = None
+    cfg.model.fine_grained_activation_offloading = False
+    cfg.model.offload_modules = None
+
+    # Checkpointing
+    cfg.checkpoint.save_interval = 100
+    cfg.checkpoint.ckpt_format = "torch_dist"
+    cfg.checkpoint.fully_parallel_save = True
+
+    # DDP
+    cfg.ddp.overlap_grad_reduce = True
+    cfg.ddp.overlap_param_gather = True
+    cfg.ddp.check_for_nan_in_grad = True
+    cfg.ddp.use_distributed_optimizer = True
+    cfg.ddp.grad_reduce_in_fp32 = True
+    cfg.ddp.average_in_collective = True
+
+    cfg.rng.seed = 5678
+
+    # Keep the complete process environment visible on the recipe.
+    cfg.env_vars = {
+        **COMMON_RECIPE_ENV_VARS,
+    }
+    return cfg
+
+
 __all__ = [
+    "gemma4_12b_sft_8gpu_h100_bf16_config",
     "gemma4_e4b_pretrain_2gpu_h100_bf16_config",
 ]

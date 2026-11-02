@@ -21,10 +21,14 @@ from megatron.bridge.recipes.gemma.h100.gemma4 import (
     _gemma4_text_conversion_mode,
 )
 from megatron.bridge.recipes.gemma.h100.gemma4 import (
+    gemma4_12b_sft_8gpu_h100_bf16_config as gemma4_12b_sft_config,
+)
+from megatron.bridge.recipes.gemma.h100.gemma4 import (
     gemma4_e4b_pretrain_2gpu_h100_bf16_config as gemma4_e4b_pretrain_config,
 )
 
 
 __all__ = [
+    "gemma4_12b_sft_config",
     "gemma4_e4b_pretrain_config",
 ]

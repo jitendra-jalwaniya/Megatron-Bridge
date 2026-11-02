@@ -14,6 +14,7 @@
 
 from megatron.bridge.models.gemma_vl.gemma3_vl_bridge import Gemma3VLBridge
 from megatron.bridge.models.gemma_vl.gemma3_vl_provider import Gemma3VLModelProvider
+from megatron.bridge.models.gemma_vl.gemma4_unified_bridge import Gemma4UnifiedTextBridge
 from megatron.bridge.models.gemma_vl.gemma4_vl_bridge import Gemma4VLBridge
 from megatron.bridge.models.gemma_vl.gemma4_vl_builder import Gemma4DenseVLModelBuilder, Gemma4VLModelBuilder
 from megatron.bridge.models.gemma_vl.gemma4_vl_config import (
@@ -33,6 +34,7 @@ __all__ = [
     "Gemma3VLModelProvider",
     "Gemma4VLModel",
     "Gemma4VLBridge",
+    "Gemma4UnifiedTextBridge",
     "Gemma4VLModelBuilder",
     "Gemma4VLModelConfig",
     "Gemma4VLModelProvider",
